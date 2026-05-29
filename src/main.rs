@@ -652,11 +652,11 @@ impl App {
                 bytes_downloaded,
                 total_bytes,
             } => {
-                if let Some(status) = self.status.as_mut() {
-                    if let Some(job) = status.active_jobs.get_mut(&index) {
-                        job.bytes_downloaded = bytes_downloaded;
-                        job.total_bytes = total_bytes;
-                    }
+                if let Some(status) = self.status.as_mut()
+                    && let Some(job) = status.active_jobs.get_mut(&index)
+                {
+                    job.bytes_downloaded = bytes_downloaded;
+                    job.total_bytes = total_bytes;
                 }
             }
             DownloadEvent::Finished { index, path } => {
@@ -744,31 +744,31 @@ fn run_app(
             }
         }
 
-        if event::poll(Duration::from_millis(60))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Up => app.move_up(),
-                    KeyCode::Down => app.move_down(),
-                    KeyCode::Right => app.expand_current(),
-                    KeyCode::Left => app.collapse_current(),
-                    KeyCode::Char(' ') => app.toggle_current_selection(),
-                    KeyCode::Char('a') => app.select_all(),
-                    KeyCode::Char('c') => app.clear_selection(),
-                    KeyCode::Char('x') if app.mode == Mode::Browsing => {
-                        match app.remove_current_item() {
-                            Ok(removed) => app.log(format!("Removed {} files.", removed)),
-                            Err(message) => app.log(message),
-                        }
+        if event::poll(Duration::from_millis(60))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Up => app.move_up(),
+                KeyCode::Down => app.move_down(),
+                KeyCode::Right => app.expand_current(),
+                KeyCode::Left => app.collapse_current(),
+                KeyCode::Char(' ') => app.toggle_current_selection(),
+                KeyCode::Char('a') => app.select_all(),
+                KeyCode::Char('c') => app.clear_selection(),
+                KeyCode::Char('x') if app.mode == Mode::Browsing => {
+                    match app.remove_current_item() {
+                        Ok(removed) => app.log(format!("Removed {} files.", removed)),
+                        Err(message) => app.log(message),
                     }
-                    KeyCode::Enter | KeyCode::Char('d') if app.mode == Mode::Browsing => {
-                        match app.begin_downloads() {
-                            Ok(rx) => download_rx = Some(rx),
-                            Err(message) => app.log(message),
-                        }
-                    }
-                    _ => {}
                 }
+                KeyCode::Enter | KeyCode::Char('d') if app.mode == Mode::Browsing => {
+                    match app.begin_downloads() {
+                        Ok(rx) => download_rx = Some(rx),
+                        Err(message) => app.log(message),
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -1327,23 +1327,23 @@ fn locate_manifest(path: &Path) -> Option<PathBuf> {
         }
     }
 
-    if let Some(parent) = path.parent() {
-        if let Ok(entries) = fs::read_dir(parent) {
-            for entry in entries.flatten() {
-                let candidate = entry.path();
-                if candidate
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("json"))
+    if let Some(parent) = path.parent()
+        && let Ok(entries) = fs::read_dir(parent)
+    {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if candidate
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("json"))
+                .unwrap_or(false)
+                && candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.contains("entries"))
                     .unwrap_or(false)
-                    && candidate
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .map(|name| name.contains("entries"))
-                        .unwrap_or(false)
-                {
-                    return Some(candidate);
-                }
+            {
+                return Some(candidate);
             }
         }
     }
@@ -1408,14 +1408,12 @@ fn current_locale_code() -> String {
     if let Ok(output) = std::process::Command::new("defaults")
         .args(["read", "-g", "AppleLocale"])
         .output()
+        && output.status.success()
+        && let Ok(locale) = String::from_utf8(output.stdout)
     {
-        if output.status.success() {
-            if let Ok(locale) = String::from_utf8(output.stdout) {
-                let code = locale.trim();
-                if code.len() >= 2 {
-                    return code.chars().take(2).collect::<String>();
-                }
-            }
+        let code = locale.trim();
+        if code.len() >= 2 {
+            return code.chars().take(2).collect::<String>();
         }
     }
 

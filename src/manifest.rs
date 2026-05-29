@@ -149,15 +149,13 @@ fn parse_structured_catalog(
 
         if let Some((cat_idx, sub_idx)) =
             resolve_asset_target(asset_object, &category_lookup, &subcategory_lookup)
-        {
-            if let Some(subcategory) = catalog
+            && let Some(subcategory) = catalog
                 .categories
                 .get_mut(cat_idx)
                 .and_then(|category| category.subcategories.get_mut(sub_idx))
-            {
-                subcategory.assets.push(asset);
-                continue;
-            }
+        {
+            subcategory.assets.push(asset);
+            continue;
         }
 
         unassigned_assets.push(asset);
@@ -268,16 +266,16 @@ fn resolve_asset_target(
     category_lookup: &HashMap<String, usize>,
     subcategory_lookup: &HashMap<String, (usize, usize)>,
 ) -> Option<(usize, usize)> {
-    if let Some(subcategory_id) = ref_id(asset_object, "subcategories") {
-        if let Some(target) = subcategory_lookup.get(&subcategory_id) {
-            return Some(*target);
-        }
+    if let Some(subcategory_id) = ref_id(asset_object, "subcategories")
+        && let Some(target) = subcategory_lookup.get(&subcategory_id)
+    {
+        return Some(*target);
     }
 
-    if let Some(category_id) = ref_id(asset_object, "categories") {
-        if let Some(category_idx) = category_lookup.get(&category_id) {
-            return Some((*category_idx, 0));
-        }
+    if let Some(category_id) = ref_id(asset_object, "categories")
+        && let Some(category_idx) = category_lookup.get(&category_id)
+    {
+        return Some((*category_idx, 0));
     }
 
     None
@@ -356,10 +354,10 @@ fn pick_url(map: &serde_json::Map<String, Value>) -> Option<String> {
     }
 
     for (key, value) in map {
-        if key.starts_with("url-") {
-            if let Some(url) = value.as_str() {
-                return Some(url.to_owned());
-            }
+        if key.starts_with("url-")
+            && let Some(url) = value.as_str()
+        {
+            return Some(url.to_owned());
         }
     }
 
@@ -378,12 +376,11 @@ fn extension_from_url(url: &str) -> String {
 
 fn string_field(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
     for key in keys {
-        if let Some(value) = map.get(*key) {
-            if let Some(text) = value.as_str() {
-                if !text.trim().is_empty() {
-                    return Some(text.to_owned());
-                }
-            }
+        if let Some(value) = map.get(*key)
+            && let Some(text) = value.as_str()
+            && !text.trim().is_empty()
+        {
+            return Some(text.to_owned());
         }
     }
     None
@@ -394,12 +391,11 @@ fn resolve_label(
     localized_name_key: Option<String>,
     fallback: Option<String>,
 ) -> String {
-    if let (Some(strings), Some(key)) = (strings, localized_name_key.as_deref()) {
-        if let Some(value) = strings.lookup(key) {
-            if !value.trim().is_empty() {
-                return value.to_owned();
-            }
-        }
+    if let (Some(strings), Some(key)) = (strings, localized_name_key.as_deref())
+        && let Some(value) = strings.lookup(key)
+        && !value.trim().is_empty()
+    {
+        return value.to_owned();
     }
 
     fallback
@@ -448,8 +444,8 @@ fn sanitize_filename(name: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
-fn collect_grouped_assets<'a>(
-    value: &'a Value,
+fn collect_grouped_assets(
+    value: &Value,
     strings: Option<&StringsCatalog>,
     path: &mut Vec<String>,
     out: &mut Vec<(Vec<String>, WallpaperAsset)>,
@@ -629,8 +625,14 @@ mod tests {
             ]
         });
         let catalog = parse_structured_catalog(&json, None).unwrap();
-        assert_eq!(catalog.categories[0].subcategories[0].assets[0].title, "Forest Scene");
-        assert_eq!(catalog.categories[0].subcategories[1].assets[0].title, "Ocean Waves");
+        assert_eq!(
+            catalog.categories[0].subcategories[0].assets[0].title,
+            "Forest Scene"
+        );
+        assert_eq!(
+            catalog.categories[0].subcategories[1].assets[0].title,
+            "Ocean Waves"
+        );
     }
 
     #[test]
@@ -647,8 +649,14 @@ mod tests {
         });
         let catalog = parse_structured_catalog(&json, None).unwrap();
         assert_eq!(catalog.categories[0].name, "General");
-        assert_eq!(catalog.categories[0].subcategories[0].name, "All Wallpapers");
-        assert_eq!(catalog.categories[0].subcategories[0].assets[0].title, "Stray Asset");
+        assert_eq!(
+            catalog.categories[0].subcategories[0].name,
+            "All Wallpapers"
+        );
+        assert_eq!(
+            catalog.categories[0].subcategories[0].assets[0].title,
+            "Stray Asset"
+        );
     }
 
     #[test]

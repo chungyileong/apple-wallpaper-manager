@@ -309,8 +309,8 @@ mod tests {
 
     #[test]
     fn is_up_to_date_returns_true_when_size_matches() {
-        let temp_dir = std::env::temp_dir()
-            .join(format!("awm-uptodate-test-{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("awm-uptodate-test-{}", std::process::id()));
         fs::create_dir_all(&temp_dir).unwrap();
         let path = temp_dir.join("test.mov");
         let content = b"hello world";
@@ -322,8 +322,8 @@ mod tests {
 
     #[test]
     fn download_stream_emits_progress_events() {
-        let temp_dir = std::env::temp_dir()
-            .join(format!("awm-progress-test-{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("awm-progress-test-{}", std::process::id()));
         fs::create_dir_all(&temp_dir).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let input = b"hello progress world".to_vec();

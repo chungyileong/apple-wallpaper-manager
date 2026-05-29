@@ -62,10 +62,10 @@ fn convert_strings_to_json(path: &Path) -> Result<String, StringsError> {
 }
 
 fn extract_labels(value: Value, path: &Path) -> HashMap<String, String> {
-    if is_loctable(path) {
-        if let Some(labels) = select_loctable_locale(&value) {
-            return labels;
-        }
+    if is_loctable(path)
+        && let Some(labels) = select_loctable_locale(&value)
+    {
+        return labels;
     }
 
     flatten_string_dict(value)
@@ -114,23 +114,19 @@ fn flatten_string_dict(value: Value) -> HashMap<String, String> {
 fn locale_preferences() -> Vec<String> {
     let mut candidates = Vec::new();
     for env_name in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Ok(value) = std::env::var(env_name) {
-            if let Some(locale) = normalize_locale(&value) {
-                candidates.push(locale.clone());
-                if let Some(short) = locale.split('_').next() {
-                    if !short.is_empty() {
-                        candidates.push(short.to_owned());
-                    }
-                }
+        if let Ok(value) = std::env::var(env_name)
+            && let Some(locale) = normalize_locale(&value)
+        {
+            candidates.push(locale.clone());
+            if let Some(short) = locale.split('_').next()
+                && !short.is_empty()
+            {
+                candidates.push(short.to_owned());
             }
         }
     }
 
-    if candidates.is_empty() {
-        candidates.push("en".to_owned());
-    } else {
-        candidates.push("en".to_owned());
-    }
+    candidates.push("en".to_owned());
 
     candidates
 }
