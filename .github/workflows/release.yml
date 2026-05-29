@@ -43,3 +43,55 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: awm-macos-arm64.tar.gz
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: chungyileong/homebrew-tap
+          ref: main
+          path: homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Update Homebrew formula
+        working-directory: homebrew-tap
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARBALL: ${{ github.workspace }}/awm-macos-arm64.tar.gz
+        run: |
+          set -euo pipefail
+
+          VERSION="${VERSION#v}"
+          SHA256="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
+
+          cat > Formula/awm.rb <<EOF
+          class Awm < Formula
+            desc "Apple Wallpaper Manager"
+            homepage "https://github.com/chungyileong/apple-wallpaper-manager"
+            version "${VERSION}"
+            url "https://github.com/chungyileong/apple-wallpaper-manager/releases/download/v#{version}/awm-macos-arm64.tar.gz"
+            sha256 "${SHA256}"
+
+            depends_on arch: :arm64
+            depends_on :macos
+
+            def install
+              bin.install "awm"
+            end
+
+            test do
+              system "#{bin}/awm", "--help"
+            end
+          end
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -n "$(git status --porcelain -- Formula/awm.rb)" ]; then
+            git add Formula/awm.rb
+            git commit -m "Update awm to v${VERSION}"
+            git push origin HEAD:main
+          else
+            echo "Formula is unchanged; skipping commit."
+          fi

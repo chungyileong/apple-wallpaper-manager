@@ -15,17 +15,22 @@ Terminal app for browsing and downloading Apple wallpapers on macOS, with a TUI,
 
 ## Install
 
-Download the latest release from the [Releases](../../releases/latest) page, then:
+Preferred:
 
 ```bash
+brew tap chungyileong/tap
+brew install awm
+```
+
+This installs the same unsigned Apple Silicon binary published in GitHub Releases. If Gatekeeper flags it on first run, clear the quarantine flag before launching it.
+
+Fallback manual install from the release tarball:
+
+```bash
+curl -LO https://github.com/chungyileong/apple-wallpaper-manager/releases/download/vX.Y.Z/awm-macos-arm64.tar.gz
 tar -xzf awm-macos-arm64.tar.gz
 chmod +x awm
 sudo mv awm /usr/local/bin/
-```
-
-Since the binary is not notarized, macOS will block it on first run. Clear the quarantine flag once:
-
-```bash
 xattr -d com.apple.quarantine /usr/local/bin/awm
 ```
 
