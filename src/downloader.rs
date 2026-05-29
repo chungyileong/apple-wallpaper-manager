@@ -295,6 +295,50 @@ mod tests {
     use std::{fs, io::Cursor};
 
     #[test]
+    fn is_up_to_date_returns_false_when_no_expected_length() {
+        let path = std::env::temp_dir().join("awm_uptodate_none_test.mov");
+        assert!(!is_up_to_date(&path, None));
+    }
+
+    #[test]
+    fn is_up_to_date_returns_false_when_file_missing() {
+        let path = std::env::temp_dir().join("awm_uptodate_missing_test_xyz.mov");
+        let _ = fs::remove_file(&path);
+        assert!(!is_up_to_date(&path, Some(100)));
+    }
+
+    #[test]
+    fn is_up_to_date_returns_true_when_size_matches() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("awm-uptodate-test-{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let path = temp_dir.join("test.mov");
+        let content = b"hello world";
+        fs::write(&path, content).unwrap();
+        assert!(is_up_to_date(&path, Some(content.len() as u64)));
+        assert!(!is_up_to_date(&path, Some(999)));
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn download_stream_emits_progress_events() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("awm-progress-test-{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let input = b"hello progress world".to_vec();
+        let mut cursor = Cursor::new(input.clone());
+        let temp_path = temp_dir.join("test.part");
+        download_stream(&mut cursor, &temp_path, Some(input.len() as u64), 0, &tx).unwrap();
+        let events: Vec<_> = rx.try_iter().collect();
+        let has_progress = events
+            .iter()
+            .any(|e| matches!(e, DownloadEvent::Progress { .. }));
+        assert!(has_progress);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn streams_bytes_to_disk() {
         let temp_dir =
             std::env::temp_dir().join(format!("awm-download-test-{}", std::process::id()));

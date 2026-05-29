@@ -149,15 +149,13 @@ fn parse_structured_catalog(
 
         if let Some((cat_idx, sub_idx)) =
             resolve_asset_target(asset_object, &category_lookup, &subcategory_lookup)
-        {
-            if let Some(subcategory) = catalog
+            && let Some(subcategory) = catalog
                 .categories
                 .get_mut(cat_idx)
                 .and_then(|category| category.subcategories.get_mut(sub_idx))
-            {
-                subcategory.assets.push(asset);
-                continue;
-            }
+        {
+            subcategory.assets.push(asset);
+            continue;
         }
 
         unassigned_assets.push(asset);
@@ -268,16 +266,16 @@ fn resolve_asset_target(
     category_lookup: &HashMap<String, usize>,
     subcategory_lookup: &HashMap<String, (usize, usize)>,
 ) -> Option<(usize, usize)> {
-    if let Some(subcategory_id) = ref_id(asset_object, "subcategories") {
-        if let Some(target) = subcategory_lookup.get(&subcategory_id) {
-            return Some(*target);
-        }
+    if let Some(subcategory_id) = ref_id(asset_object, "subcategories")
+        && let Some(target) = subcategory_lookup.get(&subcategory_id)
+    {
+        return Some(*target);
     }
 
-    if let Some(category_id) = ref_id(asset_object, "categories") {
-        if let Some(category_idx) = category_lookup.get(&category_id) {
-            return Some((*category_idx, 0));
-        }
+    if let Some(category_id) = ref_id(asset_object, "categories")
+        && let Some(category_idx) = category_lookup.get(&category_id)
+    {
+        return Some((*category_idx, 0));
     }
 
     None
@@ -356,10 +354,10 @@ fn pick_url(map: &serde_json::Map<String, Value>) -> Option<String> {
     }
 
     for (key, value) in map {
-        if key.starts_with("url-") {
-            if let Some(url) = value.as_str() {
-                return Some(url.to_owned());
-            }
+        if key.starts_with("url-")
+            && let Some(url) = value.as_str()
+        {
+            return Some(url.to_owned());
         }
     }
 
@@ -378,12 +376,11 @@ fn extension_from_url(url: &str) -> String {
 
 fn string_field(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
     for key in keys {
-        if let Some(value) = map.get(*key) {
-            if let Some(text) = value.as_str() {
-                if !text.trim().is_empty() {
-                    return Some(text.to_owned());
-                }
-            }
+        if let Some(value) = map.get(*key)
+            && let Some(text) = value.as_str()
+            && !text.trim().is_empty()
+        {
+            return Some(text.to_owned());
         }
     }
     None
@@ -394,12 +391,11 @@ fn resolve_label(
     localized_name_key: Option<String>,
     fallback: Option<String>,
 ) -> String {
-    if let (Some(strings), Some(key)) = (strings, localized_name_key.as_deref()) {
-        if let Some(value) = strings.lookup(key) {
-            if !value.trim().is_empty() {
-                return value.to_owned();
-            }
-        }
+    if let (Some(strings), Some(key)) = (strings, localized_name_key.as_deref())
+        && let Some(value) = strings.lookup(key)
+        && !value.trim().is_empty()
+    {
+        return value.to_owned();
     }
 
     fallback
@@ -448,8 +444,8 @@ fn sanitize_filename(name: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
-fn collect_grouped_assets<'a>(
-    value: &'a Value,
+fn collect_grouped_assets(
+    value: &Value,
     strings: Option<&StringsCatalog>,
     path: &mut Vec<String>,
     out: &mut Vec<(Vec<String>, WallpaperAsset)>,
@@ -519,6 +515,149 @@ fn is_container_key(key: &str) -> bool {
 mod tests {
     use super::*;
     use crate::strings::StringsCatalog;
+
+    #[test]
+    fn normalize_label_strips_aerial_category_prefix() {
+        assert_eq!(normalize_label("AerialCategoryNature"), "Nature");
+    }
+
+    #[test]
+    fn normalize_label_strips_aerial_subcategory_prefix() {
+        assert_eq!(normalize_label("AerialSubcategoryDesert"), "Desert");
+    }
+
+    #[test]
+    fn normalize_label_splits_camel_case_words() {
+        assert_eq!(normalize_label("NorthAmerica"), "North America");
+    }
+
+    #[test]
+    fn normalize_label_returns_general_for_empty() {
+        assert_eq!(normalize_label(""), "General");
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_path_separator() {
+        assert_eq!(sanitize_filename("foo/bar"), "foo_bar");
+    }
+
+    #[test]
+    fn sanitize_filename_trims_leading_underscores() {
+        assert_eq!(sanitize_filename("/leading"), "leading");
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_colon_and_asterisk() {
+        assert_eq!(sanitize_filename("foo:bar*baz"), "foo_bar_baz");
+    }
+
+    #[test]
+    fn extension_from_url_ignores_query_params() {
+        assert_eq!(
+            extension_from_url("https://cdn.example.com/wallpaper.mov?token=abc&expire=123"),
+            ".mov"
+        );
+    }
+
+    #[test]
+    fn extension_from_url_defaults_to_mov_when_no_ext() {
+        assert_eq!(
+            extension_from_url("https://cdn.example.com/wallpaper"),
+            ".mov"
+        );
+    }
+
+    #[test]
+    fn pick_url_prefers_4k_sdr_240fps_over_4k_sdr() {
+        let json = serde_json::json!({
+            "url-4K-SDR": "https://example.com/4ksdr.mov",
+            "url-4K-SDR-240FPS": "https://example.com/4ksdr240.mov",
+        });
+        assert_eq!(
+            pick_url(json.as_object().unwrap()).unwrap(),
+            "https://example.com/4ksdr240.mov"
+        );
+    }
+
+    #[test]
+    fn pick_url_falls_back_to_download_url() {
+        let json = serde_json::json!({
+            "downloadURL": "https://example.com/download.mov"
+        });
+        assert_eq!(
+            pick_url(json.as_object().unwrap()).unwrap(),
+            "https://example.com/download.mov"
+        );
+    }
+
+    #[test]
+    fn pick_url_returns_none_when_no_url_present() {
+        let json = serde_json::json!({"title": "no url here", "id": "abc"});
+        assert!(pick_url(json.as_object().unwrap()).is_none());
+    }
+
+    #[test]
+    fn structured_catalog_routes_assets_to_correct_subcategories() {
+        let json = serde_json::json!({
+            "categories": [
+                {
+                    "id": "cat1",
+                    "name": "Nature",
+                    "subcategories": [
+                        {"id": "sub1", "name": "Forests"},
+                        {"id": "sub2", "name": "Oceans"}
+                    ]
+                }
+            ],
+            "assets": [
+                {
+                    "id": "asset1",
+                    "title": "Forest Scene",
+                    "subcategories": [{"id": "sub1"}],
+                    "url-4K-SDR": "https://example.com/forest.mov"
+                },
+                {
+                    "id": "asset2",
+                    "title": "Ocean Waves",
+                    "subcategories": [{"id": "sub2"}],
+                    "url-4K-SDR": "https://example.com/ocean.mov"
+                }
+            ]
+        });
+        let catalog = parse_structured_catalog(&json, None).unwrap();
+        assert_eq!(
+            catalog.categories[0].subcategories[0].assets[0].title,
+            "Forest Scene"
+        );
+        assert_eq!(
+            catalog.categories[0].subcategories[1].assets[0].title,
+            "Ocean Waves"
+        );
+    }
+
+    #[test]
+    fn unassigned_assets_create_fallback_general_category() {
+        let json = serde_json::json!({
+            "categories": [],
+            "assets": [
+                {
+                    "id": "stray1",
+                    "title": "Stray Asset",
+                    "url-HD": "https://example.com/stray.mov"
+                }
+            ]
+        });
+        let catalog = parse_structured_catalog(&json, None).unwrap();
+        assert_eq!(catalog.categories[0].name, "General");
+        assert_eq!(
+            catalog.categories[0].subcategories[0].name,
+            "All Wallpapers"
+        );
+        assert_eq!(
+            catalog.categories[0].subcategories[0].assets[0].title,
+            "Stray Asset"
+        );
+    }
 
     #[test]
     fn extracts_grouped_assets() {
