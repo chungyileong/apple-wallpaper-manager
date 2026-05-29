@@ -1,4 +1,4 @@
-# awm
+# Apple Wallpaper Manager
 
 Rust rewrite of the Apple wallpaper downloader with a terminal UI, live download progress bars, and category/subcategory navigation.
 
