@@ -2,7 +2,10 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::mpsc::Sender,
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
     thread,
 };
 
@@ -15,6 +18,7 @@ use crate::manifest::WallpaperAsset;
 pub struct DownloadPlan {
     pub assets: Vec<WallpaperAsset>,
     pub output_dir: PathBuf,
+    pub threads: usize,
 }
 
 #[derive(Debug)]
@@ -27,6 +31,7 @@ pub enum DownloadEvent {
         total_bytes: Option<u64>,
     },
     Progress {
+        index: usize,
         bytes_downloaded: u64,
         total_bytes: Option<u64>,
     },
@@ -35,9 +40,11 @@ pub enum DownloadEvent {
         path: PathBuf,
     },
     Skipped {
+        index: usize,
         path: PathBuf,
     },
     Error {
+        index: usize,
         message: String,
     },
     Complete,
@@ -55,6 +62,7 @@ pub fn start_downloads(plan: DownloadPlan, tx: Sender<DownloadEvent>) -> thread:
     thread::spawn(move || {
         if let Err(err) = run_downloads(&plan, &tx) {
             let _ = tx.send(DownloadEvent::Error {
+                index: usize::MAX,
                 message: err.to_string(),
             });
         }
@@ -69,86 +77,167 @@ fn run_downloads(plan: &DownloadPlan, tx: &Sender<DownloadEvent>) -> Result<(), 
         .danger_accept_invalid_certs(true)
         .build()?;
 
-    for (index, asset) in plan.assets.iter().enumerate() {
-        let total = plan.assets.len();
-        let target_path = plan.output_dir.join(&asset.file_name);
-        let temp_path = target_path.with_extension(format!(
-            "{}.part",
-            target_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("download")
-        ));
+    let total = plan.assets.len();
+    let worker_count = plan.threads.max(1).min(total.max(1));
+    let (job_tx, job_rx) = mpsc::channel::<DownloadJob>();
+    for (index, asset) in plan.assets.iter().cloned().enumerate() {
+        let _ = job_tx.send(DownloadJob { index, asset });
+    }
+    drop(job_tx);
 
-        if target_path.is_file() {
-            let _ = tx.send(DownloadEvent::Skipped {
-                path: target_path.clone(),
-            });
-            continue;
-        }
+    let shared_rx = Arc::new(Mutex::new(job_rx));
+    let mut handles = Vec::with_capacity(worker_count);
 
-        let expected_length = remote_length(&client, &asset.url);
-        if is_up_to_date(&target_path, expected_length) {
-            let _ = tx.send(DownloadEvent::Skipped {
-                path: target_path.clone(),
-            });
-            continue;
-        }
-
-        let response = client.get(&asset.url).send();
-        let mut response = match response {
-            Ok(resp) => resp,
-            Err(err) => {
-                let _ = tx.send(DownloadEvent::Error {
-                    message: format!("failed to request {} ({}): {}", asset.title, asset.url, err),
-                });
-                continue;
-            }
-        };
-
-        if !response.status().is_success() {
-            let _ = tx.send(DownloadEvent::Error {
-                message: format!(
-                    "server returned {} for {} ({})",
-                    response.status(),
-                    asset.title,
-                    asset.url
-                ),
-            });
-            continue;
-        }
-
-        let total_bytes = response.content_length().or(expected_length);
-        let _ = tx.send(DownloadEvent::Started {
-            index,
-            total,
-            title: asset.title.clone(),
-            file_name: asset.file_name.clone(),
-            total_bytes,
+    for _ in 0..worker_count {
+        let worker_rx = Arc::clone(&shared_rx);
+        let worker_tx = tx.clone();
+        let worker_client = client.clone();
+        let output_dir = plan.output_dir.clone();
+        let handle = thread::spawn(move || {
+            worker_loop(total, output_dir, worker_client, worker_rx, worker_tx);
         });
+        handles.push(handle);
+    }
 
-        let result = download_stream(&mut response, &temp_path, total_bytes, tx);
-        match result {
-            Ok(()) => {
-                fs::rename(&temp_path, &target_path)?;
-                let _ = tx.send(DownloadEvent::Finished {
-                    index,
-                    path: target_path,
-                });
-            }
-            Err(err) => {
-                let _ = fs::remove_file(&temp_path);
-                let _ = tx.send(DownloadEvent::Error {
-                    message: format!(
-                        "failed to download {} ({}): {}",
-                        asset.title, asset.url, err
-                    ),
-                });
-            }
+    for handle in handles {
+        if handle.join().is_err() {
+            let _ = tx.send(DownloadEvent::Error {
+                index: usize::MAX,
+                message: "a download worker panicked".to_owned(),
+            });
         }
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct DownloadJob {
+    index: usize,
+    asset: WallpaperAsset,
+}
+
+fn worker_loop(
+    total: usize,
+    output_dir: PathBuf,
+    client: Client,
+    receiver: Arc<Mutex<Receiver<DownloadJob>>>,
+    tx: Sender<DownloadEvent>,
+) {
+    loop {
+        let job = {
+            let Ok(lock) = receiver.lock() else {
+                return;
+            };
+            lock.recv()
+        };
+
+        let Ok(job) = job else {
+            return;
+        };
+
+        process_job(total, &output_dir, &client, &tx, job);
+    }
+}
+
+fn process_job(
+    total: usize,
+    output_dir: &Path,
+    client: &Client,
+    tx: &Sender<DownloadEvent>,
+    job: DownloadJob,
+) {
+    let DownloadJob { index, asset } = job;
+    let target_path = output_dir.join(&asset.file_name);
+    let temp_path = target_path.with_extension(format!(
+        "{}.part",
+        target_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("download")
+    ));
+
+    if target_path.is_file() {
+        let _ = tx.send(DownloadEvent::Skipped {
+            index,
+            path: target_path.clone(),
+        });
+        return;
+    }
+
+    let expected_length = remote_length(client, &asset.url);
+    if is_up_to_date(&target_path, expected_length) {
+        let _ = tx.send(DownloadEvent::Skipped {
+            index,
+            path: target_path.clone(),
+        });
+        return;
+    }
+
+    let response = client.get(&asset.url).send();
+    let mut response = match response {
+        Ok(resp) => resp,
+        Err(err) => {
+            let _ = tx.send(DownloadEvent::Error {
+                index,
+                message: format!("failed to request {} ({}): {}", asset.title, asset.url, err),
+            });
+            return;
+        }
+    };
+
+    if !response.status().is_success() {
+        let _ = tx.send(DownloadEvent::Error {
+            index,
+            message: format!(
+                "server returned {} for {} ({})",
+                response.status(),
+                asset.title,
+                asset.url
+            ),
+        });
+        return;
+    }
+
+    let total_bytes = response.content_length().or(expected_length);
+    let _ = tx.send(DownloadEvent::Started {
+        index,
+        total,
+        title: asset.title.clone(),
+        file_name: asset.file_name.clone(),
+        total_bytes,
+    });
+
+    let result = download_stream(&mut response, &temp_path, total_bytes, index, tx);
+    match result {
+        Ok(()) => {
+            if let Err(err) = fs::rename(&temp_path, &target_path) {
+                let _ = fs::remove_file(&temp_path);
+                let _ = tx.send(DownloadEvent::Error {
+                    index,
+                    message: format!(
+                        "failed to finalize {} ({}): {}",
+                        asset.title, asset.url, err
+                    ),
+                });
+                return;
+            }
+            let _ = tx.send(DownloadEvent::Finished {
+                index,
+                path: target_path,
+            });
+        }
+        Err(err) => {
+            let _ = fs::remove_file(&temp_path);
+            let _ = tx.send(DownloadEvent::Error {
+                index,
+                message: format!(
+                    "failed to download {} ({}): {}",
+                    asset.title, asset.url, err
+                ),
+            });
+        }
+    }
 }
 
 fn remote_length(client: &Client, url: &str) -> Option<u64> {
@@ -175,6 +264,7 @@ fn download_stream<R: Read>(
     reader: &mut R,
     temp_path: &Path,
     total_bytes: Option<u64>,
+    index: usize,
     tx: &Sender<DownloadEvent>,
 ) -> Result<(), std::io::Error> {
     let mut file = File::create(temp_path)?;
@@ -189,6 +279,7 @@ fn download_stream<R: Read>(
         file.write_all(&buffer[..bytes_read])?;
         downloaded += bytes_read as u64;
         let _ = tx.send(DownloadEvent::Progress {
+            index,
             bytes_downloaded: downloaded,
             total_bytes,
         });
@@ -214,7 +305,7 @@ mod tests {
         let input = b"wallpaper-bytes".to_vec();
         let mut cursor = Cursor::new(input.clone());
         let temp_path = temp_dir.join("sample.mov.part");
-        download_stream(&mut cursor, &temp_path, Some(input.len() as u64), &tx)
+        download_stream(&mut cursor, &temp_path, Some(input.len() as u64), 0, &tx)
             .expect("stream bytes");
         let downloaded = fs::read(&temp_path).expect("downloaded file");
         assert_eq!(downloaded, input);

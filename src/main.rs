@@ -3,10 +3,10 @@ mod manifest;
 mod strings;
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::mpsc::{self, TryRecvError},
     time::Duration,
 };
 
@@ -39,6 +39,10 @@ struct Cli {
     /// Directory where downloads should be saved.
     #[arg(long)]
     output: Option<PathBuf>,
+
+    /// Number of concurrent download workers.
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(usize))]
+    threads: usize,
 }
 
 #[derive(Debug, Error)]
@@ -59,7 +63,6 @@ enum AppError {
 enum Mode {
     Browsing,
     Downloading,
-    Finished,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,14 +97,21 @@ struct TreeNode {
 
 #[derive(Debug)]
 struct DownloadStatus {
-    current_title: String,
-    current_index: usize,
     total_items: usize,
+    completed_items: usize,
+    failed_items: usize,
+    active_jobs: BTreeMap<usize, ActiveDownloadStatus>,
+    last_message: String,
+    thread_count: usize,
+    complete: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveDownloadStatus {
+    title: String,
+    file_name: String,
     bytes_downloaded: u64,
     total_bytes: Option<u64>,
-    completed_items: usize,
-    last_message: String,
-    complete: bool,
 }
 
 struct App {
@@ -115,10 +125,11 @@ struct App {
     status: Option<DownloadStatus>,
     log_lines: Vec<String>,
     output_dir: PathBuf,
+    download_threads: usize,
 }
 
 impl App {
-    fn new(catalog: WallpaperCatalog, output_dir: PathBuf) -> Self {
+    fn new(catalog: WallpaperCatalog, output_dir: PathBuf, download_threads: usize) -> Self {
         Self {
             catalog,
             expanded_categories: BTreeSet::new(),
@@ -130,6 +141,7 @@ impl App {
             status: None,
             log_lines: vec!["Ready to download.".to_owned()],
             output_dir,
+            download_threads,
         }
     }
 
@@ -577,26 +589,27 @@ impl App {
         if assets.is_empty() {
             return Err("No items selected.".to_owned());
         }
+        let threads = self.download_threads.max(1);
 
         self.mode = Mode::Downloading;
         self.status = Some(DownloadStatus {
-            current_title: "Preparing downloads".to_owned(),
-            current_index: 0,
             total_items: assets.len(),
-            bytes_downloaded: 0,
-            total_bytes: None,
             completed_items: 0,
+            failed_items: 0,
+            active_jobs: BTreeMap::new(),
             last_message: format!(
                 "Downloading {} files into {}",
                 assets.len(),
                 self.output_dir.display()
             ),
+            thread_count: threads,
             complete: false,
         });
         self.log_lines.clear();
         self.log(format!(
-            "Downloading {} assets to {}",
+            "Downloading {} assets with up to {} workers to {}",
             assets.len(),
+            threads,
             self.output_dir.display()
         ));
 
@@ -604,6 +617,7 @@ impl App {
         let plan = DownloadPlan {
             assets,
             output_dir: self.output_dir.clone(),
+            threads,
         };
         let _handle = start_downloads(plan, tx);
         Ok(rx)
@@ -619,41 +633,55 @@ impl App {
                 total_bytes,
             } => {
                 if let Some(status) = self.status.as_mut() {
-                    status.current_index = index;
                     status.total_items = total;
-                    status.current_title = title.clone();
-                    status.bytes_downloaded = 0;
-                    status.total_bytes = total_bytes;
+                    status.active_jobs.insert(
+                        index,
+                        ActiveDownloadStatus {
+                            title: title.clone(),
+                            file_name: file_name.clone(),
+                            bytes_downloaded: 0,
+                            total_bytes,
+                        },
+                    );
                     status.last_message = format!("Writing {file_name}");
                 }
                 self.log(format!("Started {}/{}: {}", index + 1, total, title));
             }
             DownloadEvent::Progress {
+                index,
                 bytes_downloaded,
                 total_bytes,
             } => {
                 if let Some(status) = self.status.as_mut() {
-                    status.bytes_downloaded = bytes_downloaded;
-                    status.total_bytes = total_bytes;
+                    if let Some(job) = status.active_jobs.get_mut(&index) {
+                        job.bytes_downloaded = bytes_downloaded;
+                        job.total_bytes = total_bytes;
+                    }
                 }
             }
             DownloadEvent::Finished { index, path } => {
                 if let Some(status) = self.status.as_mut() {
+                    status.active_jobs.remove(&index);
                     status.completed_items += 1;
                     status.last_message = format!("Saved {}", path.display());
-                    status.current_title = format!("Completed file {}", index + 1);
                 }
                 self.log(format!("Saved {}", path.display()));
             }
-            DownloadEvent::Skipped { path } => {
+            DownloadEvent::Skipped { index, path } => {
                 if let Some(status) = self.status.as_mut() {
+                    status.active_jobs.remove(&index);
                     status.completed_items += 1;
                     status.last_message = format!("Skipped {}", path.display());
                 }
                 self.log(format!("Skipped {}", path.display()));
             }
-            DownloadEvent::Error { message } => {
+            DownloadEvent::Error { index, message } => {
                 if let Some(status) = self.status.as_mut() {
+                    status.active_jobs.remove(&index);
+                    if index != usize::MAX {
+                        status.completed_items += 1;
+                        status.failed_items += 1;
+                    }
                     status.last_message = message.clone();
                 }
                 self.log(format!("Error: {message}"));
@@ -664,7 +692,7 @@ impl App {
                     status.last_message =
                         format!("Finished saving into {}", self.output_dir.display());
                 }
-                self.mode = Mode::Finished;
+                self.mode = Mode::Browsing;
                 self.log("All downloads complete.");
             }
         }
@@ -681,39 +709,59 @@ fn main() -> Result<(), AppError> {
 
     let strings = load_strings(&strings_path)?;
     let catalog = load_manifest(&manifest_path, Some(&strings))?;
-    run_app(catalog, output_dir)
+    run_app(catalog, output_dir, cli.threads)
 }
 
-fn run_app(catalog: WallpaperCatalog, output_dir: PathBuf) -> Result<(), AppError> {
+fn run_app(
+    catalog: WallpaperCatalog,
+    output_dir: PathBuf,
+    download_threads: usize,
+) -> Result<(), AppError> {
     let mut terminal = setup_terminal()?;
-    let mut app = App::new(catalog, output_dir);
+    let mut app = App::new(catalog, output_dir, download_threads);
     let mut download_rx: Option<mpsc::Receiver<DownloadEvent>> = None;
 
     loop {
         terminal.draw(|frame| render_ui(frame, &app))?;
 
         if let Some(rx) = &download_rx {
-            while let Ok(event) = rx.try_recv() {
-                app.handle_event(event);
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        let is_complete = matches!(event, DownloadEvent::Complete);
+                        app.handle_event(event);
+                        if is_complete {
+                            download_rx = None;
+                            break;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        download_rx = None;
+                        break;
+                    }
+                }
             }
         }
 
         if event::poll(Duration::from_millis(60))? {
             if let Event::Key(key) = event::read()? {
-                match (app.mode, key.code) {
-                    (_, KeyCode::Char('q')) => break,
-                    (Mode::Browsing, KeyCode::Up) => app.move_up(),
-                    (Mode::Browsing, KeyCode::Down) => app.move_down(),
-                    (Mode::Browsing, KeyCode::Right) => app.expand_current(),
-                    (Mode::Browsing, KeyCode::Left) => app.collapse_current(),
-                    (Mode::Browsing, KeyCode::Char(' ')) => app.toggle_current_selection(),
-                    (Mode::Browsing, KeyCode::Char('a')) => app.select_all(),
-                    (Mode::Browsing, KeyCode::Char('c')) => app.clear_selection(),
-                    (Mode::Browsing, KeyCode::Char('x')) => match app.remove_current_item() {
-                        Ok(removed) => app.log(format!("Removed {} files.", removed)),
-                        Err(message) => app.log(message),
-                    },
-                    (Mode::Browsing, KeyCode::Enter) | (Mode::Browsing, KeyCode::Char('d')) => {
+                match key.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Up => app.move_up(),
+                    KeyCode::Down => app.move_down(),
+                    KeyCode::Right => app.expand_current(),
+                    KeyCode::Left => app.collapse_current(),
+                    KeyCode::Char(' ') => app.toggle_current_selection(),
+                    KeyCode::Char('a') => app.select_all(),
+                    KeyCode::Char('c') => app.clear_selection(),
+                    KeyCode::Char('x') if app.mode == Mode::Browsing => {
+                        match app.remove_current_item() {
+                            Ok(removed) => app.log(format!("Removed {} files.", removed)),
+                            Err(message) => app.log(message),
+                        }
+                    }
+                    KeyCode::Enter | KeyCode::Char('d') if app.mode == Mode::Browsing => {
                         match app.begin_downloads() {
                             Ok(rx) => download_rx = Some(rx),
                             Err(message) => app.log(message),
@@ -730,12 +778,13 @@ fn run_app(catalog: WallpaperCatalog, output_dir: PathBuf) -> Result<(), AppErro
 }
 
 fn render_ui(frame: &mut ratatui::Frame<'_>, app: &App) {
+    let footer_height = if app.status.is_some() { 14 } else { 10 };
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(10),
+            Constraint::Length(footer_height),
         ])
         .split(frame.area());
 
@@ -745,10 +794,17 @@ fn render_ui(frame: &mut ratatui::Frame<'_>, app: &App) {
 }
 
 fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    let title = match app.mode {
-        Mode::Browsing => "awm",
-        Mode::Downloading => "awm downloading",
-        Mode::Finished => "awm complete",
+    let title = if app
+        .status
+        .as_ref()
+        .map(|status| status.complete)
+        .unwrap_or(false)
+    {
+        "awm complete"
+    } else if matches!(app.mode, Mode::Downloading) {
+        "awm downloading"
+    } else {
+        "awm"
     };
 
     let paragraph = Paragraph::new(Line::from(vec![
@@ -1004,17 +1060,26 @@ fn render_details(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             Span::raw(&status.last_message),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("File: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Queue: ", Style::default().fg(Color::Yellow)),
             Span::raw(format!(
-                "{} / {}",
-                status.current_index.saturating_add(1),
-                status.total_items
+                "{} / {} complete",
+                status.completed_items, status.total_items
             )),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("Saved: ", Style::default().fg(Color::Yellow)),
-            Span::raw(status.completed_items.to_string()),
+            Span::styled("Workers: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(
+                "{} requested, {} active",
+                status.thread_count,
+                status.active_jobs.len()
+            )),
         ]));
+        if status.failed_items > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("Errors: ", Style::default().fg(Color::Yellow)),
+                Span::raw(status.failed_items.to_string()),
+            ]));
+        }
     }
 
     let block = Block::default().title("Details").borders(Borders::ALL);
@@ -1023,10 +1088,23 @@ fn render_details(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let active_height = app
+        .status
+        .as_ref()
+        .map(|status| {
+            if status.active_jobs.is_empty() {
+                3
+            } else if status.active_jobs.len() > 4 {
+                7
+            } else {
+                (status.active_jobs.len().min(4) as u16) + 2
+            }
+        })
+        .unwrap_or(3);
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
+        .constraints(vec![
+            Constraint::Length(active_height),
             Constraint::Length(3),
             Constraint::Min(2),
         ])
@@ -1039,25 +1117,48 @@ fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
 fn render_progress(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
-        .title("Current Download")
+        .title("Active Downloads")
         .borders(Borders::ALL);
     if let Some(status) = &app.status {
-        let ratio = match status.total_bytes {
-            Some(total) if total > 0 => (status.bytes_downloaded as f64 / total as f64).min(1.0),
-            _ => 0.0,
-        };
+        if status.active_jobs.is_empty() {
+            frame.render_widget(
+                Paragraph::new("Waiting for workers to start.")
+                    .block(block)
+                    .wrap(Wrap { trim: true }),
+                area,
+            );
+            return;
+        }
 
-        let label = match status.total_bytes {
-            Some(total) => format_bytes(status.bytes_downloaded, total),
-            None => format!("{} bytes", status.bytes_downloaded),
-        };
+        let mut lines = Vec::new();
+        for (index, job) in status.active_jobs.iter().take(4) {
+            let ratio = match job.total_bytes {
+                Some(total) if total > 0 => (job.bytes_downloaded as f64 / total as f64).min(1.0),
+                _ => 0.0,
+            };
+            let bar = progress_bar(ratio, 12);
+            let bytes_label = match job.total_bytes {
+                Some(total) => format_bytes(job.bytes_downloaded, total),
+                None => format!("{} bytes", job.bytes_downloaded),
+            };
+            let label = format!(
+                "#{} {}  {}  {}",
+                index + 1,
+                bar,
+                bytes_label,
+                truncate_label(&format!("{} ({})", job.title, job.file_name), 36)
+            );
+            lines.push(Line::from(label));
+        }
+        if status.active_jobs.len() > 4 {
+            lines.push(Line::from(format!(
+                "... and {} more active download(s)",
+                status.active_jobs.len() - 4
+            )));
+        }
 
-        let gauge = Gauge::default()
-            .block(block)
-            .gauge_style(Style::default().fg(Color::Green))
-            .ratio(ratio)
-            .label(Span::raw(format!("{}  {}", status.current_title, label)));
-        frame.render_widget(gauge, area);
+        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
     } else {
         frame.render_widget(
             Paragraph::new("No active download yet.")
@@ -1130,6 +1231,30 @@ fn format_bytes(bytes_downloaded: u64, total_bytes: u64) -> String {
         bytes_downloaded as f64 / 1024.0 / 1024.0,
         total_bytes as f64 / 1024.0 / 1024.0
     )
+}
+
+fn progress_bar(ratio: f64, width: usize) -> String {
+    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let empty = width.saturating_sub(filled);
+    format!("[{}{}]", "=".repeat(filled), " ".repeat(empty))
+}
+
+fn truncate_label(label: &str, max_len: usize) -> String {
+    let mut iter = label.chars();
+    let mut result = String::new();
+    for _ in 0..max_len {
+        if let Some(ch) = iter.next() {
+            result.push(ch);
+        } else {
+            return result;
+        }
+    }
+
+    if iter.next().is_some() {
+        result.push_str("...");
+    }
+    result
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>, AppError> {
