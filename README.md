@@ -13,30 +13,49 @@ Terminal app for browsing and downloading Apple wallpapers on macOS, with a TUI,
 - Show an overall queue progress bar
 - Save downloads to the same wallpaper storage location the original app uses
 
-## Requirements
+## Install
 
-- macOS with access to the Apple wallpaper manifest
-- Rust toolchain
-
-## Usage
-
-Run it with:
+Download the latest release from the [Releases](../../releases/latest) page, then:
 
 ```bash
-cargo run
+tar -xzf awm-macos-arm64.tar.gz
+chmod +x awm
+sudo mv awm /usr/local/bin/
 ```
+
+Since the binary is not notarized, macOS will block it on first run. Clear the quarantine flag once:
+
+```bash
+xattr -d com.apple.quarantine /usr/local/bin/awm
+```
+
+Then run:
+
+```bash
+awm
+```
+
+### Build from source
+
+Requires a Rust toolchain.
+
+```bash
+cargo build --release
+./target/release/awm
+```
+
+## Usage
 
 You can also choose a destination folder:
 
 ```bash
-cargo run -- \
-  --output ~/Library/Application\ Support/com.apple.wallpaper/aerials/videos
+awm --output ~/Library/Application\ Support/com.apple.wallpaper/aerials/videos
 ```
 
 You can change the worker count with:
 
 ```bash
-cargo run -- --threads 6
+awm --threads 6
 ```
 
 ## Controls
