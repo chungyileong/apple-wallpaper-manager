@@ -521,6 +521,137 @@ mod tests {
     use crate::strings::StringsCatalog;
 
     #[test]
+    fn normalize_label_strips_aerial_category_prefix() {
+        assert_eq!(normalize_label("AerialCategoryNature"), "Nature");
+    }
+
+    #[test]
+    fn normalize_label_strips_aerial_subcategory_prefix() {
+        assert_eq!(normalize_label("AerialSubcategoryDesert"), "Desert");
+    }
+
+    #[test]
+    fn normalize_label_splits_camel_case_words() {
+        assert_eq!(normalize_label("NorthAmerica"), "North America");
+    }
+
+    #[test]
+    fn normalize_label_returns_general_for_empty() {
+        assert_eq!(normalize_label(""), "General");
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_path_separator() {
+        assert_eq!(sanitize_filename("foo/bar"), "foo_bar");
+    }
+
+    #[test]
+    fn sanitize_filename_trims_leading_underscores() {
+        assert_eq!(sanitize_filename("/leading"), "leading");
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_colon_and_asterisk() {
+        assert_eq!(sanitize_filename("foo:bar*baz"), "foo_bar_baz");
+    }
+
+    #[test]
+    fn extension_from_url_ignores_query_params() {
+        assert_eq!(
+            extension_from_url("https://cdn.example.com/wallpaper.mov?token=abc&expire=123"),
+            ".mov"
+        );
+    }
+
+    #[test]
+    fn extension_from_url_defaults_to_mov_when_no_ext() {
+        assert_eq!(
+            extension_from_url("https://cdn.example.com/wallpaper"),
+            ".mov"
+        );
+    }
+
+    #[test]
+    fn pick_url_prefers_4k_sdr_240fps_over_4k_sdr() {
+        let json = serde_json::json!({
+            "url-4K-SDR": "https://example.com/4ksdr.mov",
+            "url-4K-SDR-240FPS": "https://example.com/4ksdr240.mov",
+        });
+        assert_eq!(
+            pick_url(json.as_object().unwrap()).unwrap(),
+            "https://example.com/4ksdr240.mov"
+        );
+    }
+
+    #[test]
+    fn pick_url_falls_back_to_download_url() {
+        let json = serde_json::json!({
+            "downloadURL": "https://example.com/download.mov"
+        });
+        assert_eq!(
+            pick_url(json.as_object().unwrap()).unwrap(),
+            "https://example.com/download.mov"
+        );
+    }
+
+    #[test]
+    fn pick_url_returns_none_when_no_url_present() {
+        let json = serde_json::json!({"title": "no url here", "id": "abc"});
+        assert!(pick_url(json.as_object().unwrap()).is_none());
+    }
+
+    #[test]
+    fn structured_catalog_routes_assets_to_correct_subcategories() {
+        let json = serde_json::json!({
+            "categories": [
+                {
+                    "id": "cat1",
+                    "name": "Nature",
+                    "subcategories": [
+                        {"id": "sub1", "name": "Forests"},
+                        {"id": "sub2", "name": "Oceans"}
+                    ]
+                }
+            ],
+            "assets": [
+                {
+                    "id": "asset1",
+                    "title": "Forest Scene",
+                    "subcategories": [{"id": "sub1"}],
+                    "url-4K-SDR": "https://example.com/forest.mov"
+                },
+                {
+                    "id": "asset2",
+                    "title": "Ocean Waves",
+                    "subcategories": [{"id": "sub2"}],
+                    "url-4K-SDR": "https://example.com/ocean.mov"
+                }
+            ]
+        });
+        let catalog = parse_structured_catalog(&json, None).unwrap();
+        assert_eq!(catalog.categories[0].subcategories[0].assets[0].title, "Forest Scene");
+        assert_eq!(catalog.categories[0].subcategories[1].assets[0].title, "Ocean Waves");
+    }
+
+    #[test]
+    fn unassigned_assets_create_fallback_general_category() {
+        let json = serde_json::json!({
+            "categories": [],
+            "assets": [
+                {
+                    "id": "stray1",
+                    "title": "Stray Asset",
+                    "url-HD": "https://example.com/stray.mov"
+                }
+            ]
+        });
+        let catalog = parse_structured_catalog(&json, None).unwrap();
+        assert_eq!(catalog.categories[0].name, "General");
+        assert_eq!(catalog.categories[0].subcategories[0].name, "All Wallpapers");
+        assert_eq!(catalog.categories[0].subcategories[0].assets[0].title, "Stray Asset");
+    }
+
+    #[test]
     fn extracts_grouped_assets() {
         let json = serde_json::json!({
             "assets": {

@@ -135,6 +135,90 @@ fn locale_preferences() -> Vec<String> {
     candidates
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn strings_catalog_lookup_finds_existing_key() {
+        let catalog = StringsCatalog::from_pairs(&[("Greeting", "Hello"), ("Farewell", "Goodbye")]);
+        assert_eq!(catalog.lookup("Greeting"), Some("Hello"));
+        assert_eq!(catalog.lookup("Farewell"), Some("Goodbye"));
+        assert_eq!(catalog.lookup("Missing"), None);
+    }
+
+    #[test]
+    fn normalize_locale_strips_encoding_suffix() {
+        assert_eq!(normalize_locale("en_US.UTF-8"), Some("en_US".to_owned()));
+    }
+
+    #[test]
+    fn normalize_locale_strips_modifier_suffix() {
+        assert_eq!(normalize_locale("de_DE@euro"), Some("de_DE".to_owned()));
+    }
+
+    #[test]
+    fn normalize_locale_normalizes_dashes_to_underscores() {
+        assert_eq!(normalize_locale("en-US"), Some("en_US".to_owned()));
+    }
+
+    #[test]
+    fn normalize_locale_returns_none_for_empty_or_whitespace() {
+        assert_eq!(normalize_locale(""), None);
+        assert_eq!(normalize_locale("   "), None);
+    }
+
+    #[test]
+    fn is_loctable_detects_loctable_extension() {
+        assert!(is_loctable(Path::new("bundle.loctable")));
+        assert!(is_loctable(Path::new("bundle.LOCTABLE")));
+        assert!(!is_loctable(Path::new("bundle.strings")));
+        assert!(!is_loctable(Path::new("bundle")));
+    }
+
+    #[test]
+    fn flatten_string_dict_extracts_string_values() {
+        let json = serde_json::json!({"Hello": "World", "Foo": "Bar"});
+        let result = flatten_string_dict(json);
+        assert_eq!(result.get("Hello").map(|s| s.as_str()), Some("World"));
+        assert_eq!(result.get("Foo").map(|s| s.as_str()), Some("Bar"));
+    }
+
+    #[test]
+    fn flatten_string_dict_skips_non_string_values() {
+        let json = serde_json::json!({"num": 42, "name": "value"});
+        let result = flatten_string_dict(json);
+        assert!(!result.contains_key("num"));
+        assert_eq!(result.get("name").map(|s| s.as_str()), Some("value"));
+    }
+
+    #[test]
+    fn select_loctable_locale_picks_english_when_present() {
+        // "en" is always appended to locale_preferences() as the final fallback
+        let json = serde_json::json!({
+            "en": {"Greeting": "Hello", "Farewell": "Goodbye"}
+        });
+        let result = select_loctable_locale(&json).unwrap();
+        assert_eq!(result.get("Greeting").map(|s| s.as_str()), Some("Hello"));
+    }
+
+    #[test]
+    fn select_loctable_locale_falls_back_to_first_available_locale() {
+        let json = serde_json::json!({
+            "xx-nosuchthing": {"Key": "Value"}
+        });
+        // No locale preference matches "xx-nosuchthing", so the fallback loop
+        // over all map values should still return a result.
+        let result = select_loctable_locale(&json);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().get("Key").map(|s| s.as_str()),
+            Some("Value")
+        );
+    }
+}
+
 fn normalize_locale(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
