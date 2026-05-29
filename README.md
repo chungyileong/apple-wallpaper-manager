@@ -1,6 +1,8 @@
 # Apple Wallpaper Manager
 
-Rust rewrite of the Apple wallpaper downloader with a terminal UI, live download progress bars, and category/subcategory navigation.
+Terminal app for browsing and downloading Apple wallpapers on macOS, with a TUI, live progress bars, and category/subcategory navigation.
+
+![Demo](assets/demo.gif)
 
 ## Features
 
