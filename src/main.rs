@@ -619,7 +619,7 @@ impl App {
             output_dir: self.output_dir.clone(),
             threads,
         };
-        let _handle = start_downloads(plan, tx);
+        start_downloads(plan, tx);
         Ok(rx)
     }
 
